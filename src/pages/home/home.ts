@@ -1,10 +1,13 @@
-import { Component, NgZone } from '@angular/core';
-import { NavController, IonicPage, Events, NavParams } from 'ionic-angular';
+import { Component, NgZone, ViewChild } from '@angular/core';
+import { NavController, IonicPage, Events, NavParams, Slides } from 'ionic-angular';
 import { UtilityServiceProvider } from '../../providers/utility-service';
 import { DataProductServiceProvider } from '../../providers/dataProduct-service';
 import { Product } from '../../models/products';
 import { AuthServiceProvider } from '../../providers/auth-service';
 import { LocationService, MyLocationOptions } from '@ionic-native/google-maps';
+import { Category } from '../../models/category';
+import { DataCategoryServiceProvider } from '../../providers/dataCategory-service';
+import { DataNotificationServiceProvider } from '../../providers/dataNotification-service';
 
 @IonicPage({
   name: 'home'
@@ -14,42 +17,74 @@ import { LocationService, MyLocationOptions } from '@ionic-native/google-maps';
   templateUrl: 'home.html'
 })
 export class HomePage {
+  @ViewChild(Slides)
+  slides: Slides;
+
   private listPost: Array<Product>;
   public filteredItems: Array<Product>;
   public listPostLeft: Array<Product>;
   public listPostRight: Array<Product>;
-  public filterText: string = '';
-  public isSearching: boolean = true;
-  public lockBtn: boolean = false;
+  public listSolution: Array<Category>;
+  public sliderProduct: Array<Product>;
+
   public selectedLikePost: any;
+
+  public filterText: string = '';
   public postType: string;
+  public locationIndicatorText: string;
+
   public userId: number;
   public distance: number;
   public selectedProvince: number;
   public selectedCity: number;
+  public numberRandomImages: number = 5;
+  public unreadNotification: number = 0;
+
+  public isPromoted: boolean = true;
+  public isSearching: boolean = true;
+  public isSearchingSlider: boolean = true;
+  public isSearchingSolution: boolean = true;
+  public lockBtn: boolean = false;
   public locationEnabled: boolean = false;
-  public locationIndicatorText: string;
+  public newPostEnabled: boolean;
+  public notificationEnabled: boolean = true;
+  public solutionEnabled: boolean = true;
+  public sliderEnabled: boolean = true;
 
   constructor(
     private navCtrl: NavController,
     private navParams: NavParams,
     private utility: UtilityServiceProvider,
     private dataProduct: DataProductServiceProvider,
+    private dataCategory: DataCategoryServiceProvider,
     private events: Events,
     private auth: AuthServiceProvider,
+    private dataNotification: DataNotificationServiceProvider,
     private zone: NgZone
   ) {
-    this.listPost = new Array<Product>();
     this.postType = 'public';
+    this.listPost = new Array<Product>();
+    this.listSolution = new Array<Category>();
+    this.sliderProduct = new Array<Product>();
     this.filterItems(this.locationEnabled);
-    console.log('auth', this.auth.getPrincipal());
     this.userId = this.auth.getPrincipal().id;
+    this.newPostEnabled = this.auth.getPrincipal().role === 'Supplier' ? true : false;
+    this.notificationEnabled = this.navParams.data ? true : false;
   }
 
   ionViewWillEnter() {
     if (!this.listPost.length) this.isSearching = true;
-    this.postType = 'public';
     this.loadPostData();
+    if (this.navParams.data.solution || this.navParams.data.company) {
+      this.notificationEnabled = false;
+      this.sliderEnabled = false;
+      this.isPromoted = false;
+      this.solutionEnabled = false;
+    } else {
+      this.postType = 'public';
+      this.loadSolution();
+      this.loadNotificationCount();
+    }
   }
 
   ionViewDidLoad() {
@@ -84,7 +119,9 @@ export class HomePage {
         this.selectedProvince = sub.province.id;
         this.filterItems(this.locationEnabled);
         this.isSearching = false;
-        this.locationIndicatorText = sub.city.id ? `${sub.city.name}, ${sub.province.name}` : `SELURUH ${sub.province.name}`;
+        this.locationIndicatorText = sub.city.id
+          ? `${sub.city.name}, ${sub.province.name}`
+          : `SELURUH ${sub.province.name}`;
       }
     });
 
@@ -98,6 +135,19 @@ export class HomePage {
     this.events.subscribe('backFromLocation', () => {
       this.postType = 'public';
     });
+
+    // this.events.subscribe('notification-arrived', () => {
+    // this.unreadNotification
+    // });
+  }
+  loadNotificationCount() {
+    this.dataNotification
+      .fetchUnReadNotificationCount(this.userId)
+      .then(res => {
+        this.unreadNotification = res.unRead;
+        console.log('notification unread', this.unreadNotification);
+      })
+      .catch(err => this.utility.showToast(err));
   }
 
   locationIndicatorClicked() {
@@ -110,15 +160,31 @@ export class HomePage {
       .getListAllProducts()
       .then(res => {
         this.isSearching = false;
-        if (this.navParams.data.solution) this.listPost = res.filter(x => x.categoryName === this.navParams.data.solution.category);
-        else if (this.navParams.data.company) this.listPost = res.filter(x => x.companyName === this.navParams.data.company.companyName);
-        else this.listPost = res;
+        if (this.navParams.data.solution)
+          this.listPost = res.filter(x => x.categoryName === this.navParams.data.solution.category);
+        else if (this.navParams.data.company)
+          this.listPost = res.filter(x => x.companyName === this.navParams.data.company.companyName);
+        else {
+          this.listPost = res;
+          this.getPromotedProduct(res);
+        }
         this.filterItems(this.locationEnabled);
       })
       .catch(err => {
         this.isSearching = false;
         if (!isReload) this.utility.showToast(err);
       });
+  }
+
+  loadSolution() {
+    if (this.listSolution.length) this.isSearchingSolution = false;
+    this.dataCategory
+      .getListCategory()
+      .then(sub => {
+        this.listSolution = sub.splice(0, 7);
+        this.isSearchingSolution = false;
+      })
+      .catch(err => this.utility.showToast(err));
   }
 
   segmentChanged() {
@@ -144,7 +210,8 @@ export class HomePage {
   filterItems(isLocation) {
     let data = [];
     if (this.postType === 'public') data = this.listPost;
-    if (this.postType === 'holding') data = this.listPost.filter(res => res.holdingId === this.dataProduct.getHoldingId());
+    if (this.postType === 'holding')
+      data = this.listPost.filter(res => res.holdingId === this.dataProduct.getHoldingId());
     if (this.postType === 'favorite') data = this.listPost.filter(res => res.isLike);
 
     const filtering = () => {
@@ -193,11 +260,41 @@ export class HomePage {
     );
   }
 
-  editPost(post) {
+  editPost(event, post) {
+    event.stopPropagation();
     this.navCtrl.push('newPost', { id: post.id });
   }
 
-  private nearMePost(dist): Promise<any> {
+  showAllSolutions() {
+    this.navCtrl.push('solution');
+  }
+
+  filterSolutions(solution) {
+    this.navCtrl.push('home', { solution: solution });
+  }
+
+  slidesClicked() {
+    const idx = this.slides.getActiveIndex();
+    if (idx === 0) {
+      this.showDetail(this.sliderProduct[this.sliderProduct.length - 1]);
+    } else if (idx === 1) {
+      this.showDetail(this.sliderProduct[idx - 1]);
+    } else if (idx > this.sliderProduct.length) {
+      this.showDetail(this.sliderProduct[idx - 1 - this.sliderProduct.length]);
+    } else {
+      this.showDetail(this.sliderProduct[idx - 1]);
+    }
+  }
+  slideAutoPlayStopped() {
+    setTimeout(() => {
+      this.slides.startAutoplay();
+    }, 5000);
+  }
+  toNotificationPage() {
+    this.navCtrl.push('notification');
+  }
+
+  private nearMePost(dist): Promise<Array<any>> {
     return new Promise(resolve => {
       this.getPosition()
         .then(pos => {
@@ -216,6 +313,28 @@ export class HomePage {
           resolve([]);
         });
     });
+  }
+
+  private getRandomProduct(products: Array<Product>, n: number) {
+    if (products.length < n) n = products.length;
+    let temp = [];
+    while (n--) {
+      var product = products[Math.floor(Math.random() * products.length)];
+      if (temp.findIndex(x => x.id === product.id) < 0) temp.push(product);
+      else n++;
+    }
+    this.sliderProduct = temp;
+    this.isSearchingSlider = false;
+  }
+
+  private getPromotedProduct(products: Array<Product>) {
+    this.sliderProduct = products.filter(x => x.isPromoted);
+    if (!this.sliderProduct.length) {
+      this.isPromoted = false;
+      this.getRandomProduct(products, this.numberRandomImages);
+    } else {
+      this.isSearchingSlider = false;
+    }
   }
 
   private getPosition() {
